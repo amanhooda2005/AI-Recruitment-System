@@ -8,6 +8,95 @@ import streamlit as st
 from phi.agent import Agent
 from phi.utils.log import logger
 
+import time
+import random
+from openai import RateLimitError
+
+
+def safe_agent_run(agent, prompt, retries=5):
+    delay = 2
+    for i in range(retries):
+        try:
+            return agent.run(prompt)
+        except RateLimitError:
+            if i < retries - 1:
+                time.sleep(delay + random.uniform(0, 1))
+                delay *= 2
+            else:
+                raise
+
+
+def clean_json_response(text: str):
+    try:
+        text = text.strip().replace("```json", "").replace("```", "")
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1:
+            return json.loads(text[start:end + 1])
+        raise ValueError("No valid JSON found")
+    except Exception:
+        raise ValueError("Invalid JSON format from LLM")
+
+
+def analyze_resume(
+    resume_text: str,
+    role_requirements,
+    role,
+    analyzer: Agent,
+) -> Tuple[bool, str]:
+
+    try:
+        # 🔥 LIMIT INPUT SIZE (VERY IMPORTANT)
+        resume_text = resume_text[:3000]
+
+        prompt = f"""
+        Analyze the provided resume against the specified role requirements and return ONLY JSON.
+
+        Resume Text: {resume_text}
+
+        Job Role: {role}
+
+        Role Requirements: {role_requirements['job_description']}
+
+        Additional Instructions:
+        {role_requirements['additional_instructions']}
+
+        JSON FORMAT:
+        {{
+            "selected": true/false,
+            "feedback": "Detailed feedback",
+            "matching_skills": [],
+            "missing_skills": [],
+            "experience_level": "junior/mid/senior"
+        }}
+        """
+
+        # ✅ SAFE CALL (fixes your RateLimitError)
+        response = safe_agent_run(analyzer, prompt)
+
+        assistant_message = next(
+            (msg.content for msg in response.messages if msg.role == "assistant"),
+            None,
+        )
+
+        if not assistant_message:
+            raise ValueError("No assistant response found")
+
+        # ✅ SAFE JSON PARSE
+        result = clean_json_response(assistant_message)
+
+        return result.get("selected", False), result.get(
+            "feedback", "No feedback provided"
+        )
+
+    except RateLimitError:
+        st.error("⚠️ API rate limit exceeded. Please try again in a few seconds.")
+        return False, "Rate limit error"
+
+    except Exception as e:
+        logger.error(f"Resume analysis failed: {str(e)}")
+        st.error("Error analyzing resume. Please try again.")
+        return False, "Analysis failed"
 
 def init_session_state() -> None:
     """Initialize only necessary session state variables."""
@@ -67,6 +156,7 @@ def add_job_details(job_role, job_description, additional_instructions):
         return False
 
 
+f"""
 def analyze_resume(
     resume_text: str,
     role_requirements,
@@ -121,7 +211,7 @@ def analyze_resume(
     except (json.JSONDecodeError, ValueError) as e:
         st.error(f"Error processing response: {str(e)}")
         return False, f"Error analyzing resume: {str(e)}"
-
+'''
 
 def send_selection_email(email_agent: Agent, to_email: str, role: str) -> None:
     email_agent.run(
